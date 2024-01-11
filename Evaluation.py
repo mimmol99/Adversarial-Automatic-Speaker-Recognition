@@ -37,7 +37,7 @@ def training_phase(model, train_loader, eval_loader, epochs, criterion, optimize
                 labels = labels.float()
 
                 scores = scores.squeeze(1)
-
+            
             loss = criterion(scores, labels)
 
             optimizer.zero_grad()
@@ -86,6 +86,7 @@ def training_phase(model, train_loader, eval_loader, epochs, criterion, optimize
 
         if patience is not None and epochs_no_improve == patience:
             print('Early stopping triggered')
+            epochs = epoch+1
             break
             
     if plot == True:
