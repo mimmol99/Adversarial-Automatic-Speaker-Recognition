@@ -6,7 +6,7 @@
 3. [Contributing](#contributing)
 4. [License](#license)
 
-![Framework Architecture](images/architecture.png)
+![Framework Architecture](Adv_ASR_framework.png)
 
 ## Introduction
 
