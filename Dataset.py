@@ -1,3 +1,5 @@
+#Dataset classes
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 import os
@@ -10,12 +12,64 @@ import math
 import torchaudio
 from torch import nn, optim
 from tqdm import tqdm
+from multiprocessing import Pool
+import shutil
+
+
+def to_loader(samples, labels, batch_size=32):
+    """
+    Convert samples and labels into a PyTorch DataLoader.
+
+    Args:
+        samples: List of input samples.
+        labels: List of corresponding labels.
+        batch_size (int): Batch size for DataLoader.
+
+    Returns:
+        DataLoader: PyTorch DataLoader containing the samples and labels.
+    """
+    dataset = CustomDataset(samples, labels)
+    loader = DataLoader(dataset, batch_size=batch_size, collate_fn=None)
+    return loader
+
+def convert_to_numpy(signal):
+    """
+    Convert a signal to a NumPy array.
+
+    Args:
+        signal: Input signal, either a PyTorch tensor or a NumPy array.
+
+    Returns:
+        np.ndarray: NumPy array containing the signal data.
+    """
+    # Check if the signal is a tuple with a tensor as the first element
+    if isinstance(signal, tuple) and torch.is_tensor(signal[0]):
+        return signal[0].cpu().detach().numpy()
+    elif torch.is_tensor(signal):
+        return signal.cpu().detach().numpy()
+    elif isinstance(signal, np.ndarray):
+        return signal
+    else:
+        print(f"Unexpected signal type: {signal}, {type(signal)}")
+        raise TypeError("Signal must be a PyTorch tensor, a NumPy array, or a tuple with a tensor as the first element")
+
+
 
 
 class SpReWDataset(Dataset):
-    def __init__(self, base_path,transform=None, target_transform=None, generate_signals = False):
+    """
+    Custom PyTorch Dataset class for SpReW dataset.
+
+    Args:
+        base_path (str): Base directory path of the dataset.
+        task (str): Task type, e.g., "SV" (Speaker Verification).
+        generate_signals (bool, optional): Whether to generate signals from audio paths.
+    """
+    def __init__(self, base_path,task, generate_signals = True):
         self.base_path = base_path
+        self.task = task
         self.categories = ['C00', 'C01', 'W01', 'W02']
+        self.generate_signals = generate_signals
 
         speakers = sorted([ int(speaker) for speaker in (os.listdir(os.path.join(self.base_path,self.categories[0])))])
         self.authorized_speakers = ['000'+str(speaker) for speaker in speakers[:10]] #from 0000 to 0009
@@ -27,30 +81,63 @@ class SpReWDataset(Dataset):
 
 
         self.audio_paths = self.get_audio_paths()
-        if generate_signals:
-            self.signals = self.generate_signals(self.audio_paths.keys())
         self.splitted_paths = {'training': [], 'validation': [], 'test': []}  # Initialize as a dictionary
-        self.transform = transform
-        self.target_transform = target_transform
+        self.split_paths(split_training=0.7, split_validation=0.25, split_test=0.05)
+
+        if self.generate_signals:
+            self.signals = self.generate_signals_from_paths(self.audio_paths.keys())
+            self.splitted_signals = {'training': [], 'validation': [], 'test': []}
+            self.splitted_signals = self.generate_splitted_signals(self.splitted_paths)
+
 
 
     def get_base_path(self):
-        return base_path
+        """
+        Retrieve the base directory path of the dataset.
+
+        Returns:
+            str: Base directory path.
+        """
+        return self.base_path
 
 
     def get_speakers(self):
+        """
+        Retrieve the list of speakers in the dataset.
+
+        Returns:
+            list: List of speaker IDs.
+        """
         return self.speakers
 
 
     def get_authorized_speakers(self):
+        """
+        Retrieve the list of authorized speakers in the dataset.
+
+        Returns:
+            list: List of authorized speaker IDs.
+        """        
         return self.authorized_speakers
 
 
     def get_unauthorized_speakers(self):
+        """
+        Retrieve the list of unauthorized speakers in the dataset.
+
+        Returns:
+            list: List of unauthorized speaker IDs.
+        """
         return self.unauthorized_speakers
 
 
     def get_categories(self):
+        """
+        Retrieve the list of categories in the dataset.
+
+        Returns:
+            list: List of category labels.
+        """
         return self.categories
 
 
@@ -66,20 +153,63 @@ class SpReWDataset(Dataset):
         return category
 
 
-    def get_label_from_path(self,path):
+    def get_label_from_path(self, path):
+        """
+        Retrieve the label from an audio file path.
+
+        Args:
+            path (str): Path to the audio file.
+
+        Returns:
+            int: Label corresponding to the audio file.
+        """
         speaker = self.get_speaker_from_path(path)
         label = self.speakers_to_int[speaker]
+
+        if self.task == "SV":
+            if speaker in self.authorized_speakers:
+                label = 1
+            else:
+                label = 0
+
         return label
 
-    def get_signal(self,path):
+    def get_signal(self, path):
+        """
+        Retrieve the audio signal from a given path.
+
+        Args:
+            path (str): Path to the audio file.
+
+        Returns:
+            torch.Tensor: Audio signal.
+        """
         return self.signals[path]
 
-    def generate_signals(self,paths):
+    def get_signals(self):
+        return self.signals
+
+    def get_splitted_signals(self):
+        if self.generate_signals:
+            return self.splitted_signals
+        else:
+            self.splitted_signals = self.generate_splitted_signals(self.splitted_paths)
+            self.generate_signals = True
+            return self.splitted_signals
+
+
+    def generate_signals_from_paths(self,paths):
         signals = {}
         for path in paths:
-            if self.is_audio_file(path):
-                signals[path] = torchaudio.load(path)
+            if os.path.isfile(path) and self.is_audio_file(path):
+                signal,fs = torchaudio.load(path)
+                signals[path] = signal
         return signals
+
+    def generate_splitted_signals(self,splitted_paths):
+        for split,paths in splitted_paths.items():
+            self.splitted_signals[split] = [self.get_signal(path) for path in paths]
+        return self.splitted_signals
 
     def is_audio_file(self, file_path):
         # Add other audio file extensions as needed
@@ -155,7 +285,17 @@ class SpReWDataset(Dataset):
                 self.splitted_paths['validation'].extend([sample_path for sample_path,_ in validation])
                 self.splitted_paths['test'].extend([sample_path for sample_path,_ in test])
 
+        self.clean_splitted_paths()
+
         return self.splitted_paths['training'],self.splitted_paths['validation'],self.splitted_paths['test']
+
+    def clean_splitted_paths(self):
+        for split,paths in self.splitted_paths.items():
+            for path in paths:
+                if os.path.isdir(path):
+                # If it's a directory, delete it
+                    shutil.rmtree(path)
+                    print(f"Removed directory: {path}")
 
 
 
@@ -306,6 +446,12 @@ class SpReWDataset(Dataset):
 
 
     def __len__(self):
+        """
+        Get the total number of audio chunks in the dataset.
+
+        Returns:
+            int: Total number of audio chunks.
+        """
         return len(self.audio_paths)
 
 
@@ -326,11 +472,20 @@ class SpReWDataset(Dataset):
 
 
 class ChunkedSpReWDataset(SpReWDataset):
+    """
+    Custom PyTorch Dataset class for chunked SpReW dataset.
 
-    def __init__(self, base_path, chunk_size=0.2, transform=None, target_transform=None, generate_signals=False):
+    Args:
+        base_path (str): Base directory path of the dataset.
+        task (str): Task type, e.g., "SV" (Speaker Verification).
+        chunk_size (float, optional): Size of each audio chunk in seconds. Defaults to 2.
+        generate_signals (bool, optional): Whether to generate signals from audio paths. Defaults to False.
+    """
+
+    def __init__(self, base_path,task, chunk_size=2, generate_signals=False):
         self.audio_paths = None
-        super().__init__(base_path, transform, target_transform, generate_signals)
-
+        super().__init__(base_path,task, generate_signals)
+        self.task = task
         self.generate_signals = generate_signals
         self.chunk_size = chunk_size
         self.signals = {}
@@ -346,6 +501,11 @@ class ChunkedSpReWDataset(SpReWDataset):
         self.splitted_paths = self.chunked_paths
         self.set_splitted_paths(self.splitted_paths)
 
+        if self.generate_signals:
+            self.signals = self.generate_signals_from_paths(self.audio_paths.keys())
+            self.splitted_signals = {'training': [], 'validation': [], 'test': []}
+            self.splitted_signals = self.generate_splitted_signals(self.splitted_paths)
+
         self.audio_paths = {}
 
         for section in self.chunked_paths.keys():
@@ -359,6 +519,12 @@ class ChunkedSpReWDataset(SpReWDataset):
 
 
     def get_audio_paths(self):
+        """
+        Retrieve the audio paths from the dataset.
+
+        Returns:
+            dict: Dictionary containing audio paths and their corresponding labels and categories.
+        """
         if self.audio_paths is None:
             self.audio_paths = super().get_audio_paths()
             return self.audio_paths
@@ -367,63 +533,121 @@ class ChunkedSpReWDataset(SpReWDataset):
 
 
     def get_splitted_paths(self):
+        """
+        Retrieve the paths split into training, validation, and test sets.
+
+        Returns:
+            dict: Dictionary containing paths split into different sets.
+        """
         return self.splitted_paths
 
 
     def get_chunked_paths(self):
+        """
+        Retrieve the paths split into audio chunks.
+
+        Returns:
+            dict: Dictionary containing paths split into audio chunks.
+        """
         return self.chunked_paths
 
 
-    def get_signal(self,path):
-        #print(self.signals)
-        return self.signals[path]
+    def get_signal(self, path):
+        """
+        Retrieve the audio signal from a given path.
+
+        Args:
+            path (str): Path to the audio file.
+
+        Returns:
+            torch.Tensor: Audio signal.
+        """
+        if path in self.signals.keys():
+            return self.signals[path]
+        else:
+            signal,fs = torchaudio.load(path)
+            self.signals[path] = signal
+            return self.signals[path]
+
+    def process_file(self, audio_path):
+        """
+        Process an audio file by dividing it into chunks.
+
+        Args:
+            audio_path (str): Path to the audio file.
+
+        Returns:
+            list: List of paths to the audio chunks.
+        """
 
 
-    def divide_and_save_chunks(self, paths):
+        if not os.path.isfile(audio_path):
+            print(f"Skipping directory: {audio_path}")
+            return []
+
         chunked_paths = []
 
-        for audio_path in tqdm(paths, desc="Processing audio files"):
-            if not self.is_audio_file(audio_path):
-                continue  # Skip if the file is not an audio file
+        basename = os.path.basename(audio_path).split(".")[0]
+        save_path = os.path.join(self.base_path, 'chunked_audios_' + str(self.chunk_size).replace(".", "_"), basename)
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
 
-            basename = os.path.basename(audio_path).split(".")[0]
-            save_path = os.path.join(self.base_path, 'chunked_audios_' + str(self.chunk_size).replace(".","_"), basename)
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
+        signal, fs = torchaudio.load(audio_path)
+        num_samples_per_chunk = int(fs * self.chunk_size)
+        num_chunks = math.ceil(signal.shape[1] / num_samples_per_chunk)
 
-            signal, fs = torchaudio.load(audio_path)
-            num_samples_per_chunk = int(fs * self.chunk_size)
-            num_chunks = math.ceil(signal.shape[1] / num_samples_per_chunk)
+        existing_files = set(os.listdir(save_path))
 
-            if len(os.listdir(save_path)) >= (num_chunks - 1) and not self.generate_signals:
-                #print(f"skipping {save_path},already exists")
-                for chunk_path in os.listdir(save_path):
-                    chunk_total_path = os.path.join(save_path, chunk_path)
-                    chunked_paths.append(chunk_total_path)
-                    if self.generate_signals:
-                        chunk_signal,fs = torchaudio.load(chunk_total_path)
-                        self.signals[chunk_total_path] = chunk_signal
+        for chunk in range(num_chunks):
+            chunk_file_name = f"{basename}_chunk_{chunk}.wav"
+            chunk_save_path = os.path.join(save_path, chunk_file_name)
 
+            if chunk_file_name in existing_files and not self.generate_signals:
+                chunked_paths.append(chunk_save_path)
                 continue
 
-            for chunk in range(num_chunks):
-                start = chunk * num_samples_per_chunk
-                end = start + num_samples_per_chunk
-
-                if end > signal.shape[1]:
+            start = chunk * num_samples_per_chunk
+            end = start + num_samples_per_chunk
+            if end > signal.shape[1]:
+                #if discarding too much,take the last chunk from end-chunk to end
+                remaining_samples = signal.shape[1] - start
+                if remaining_samples > (num_samples_per_chunk // 2):
+                    start = signal.shape[1] - num_samples_per_chunk  # Adjust the start position
+                    end = signal.shape[1]
+                else:
                     continue  # Skip saving shorter chunks
 
-                chunk_signal = signal[:, start:end]
-                chunk_file_name = f"{basename}_chunk_{chunk}.wav"
-                chunk_save_path = os.path.join(save_path, chunk_file_name)
-                torchaudio.save(chunk_save_path, chunk_signal, fs)
-                if self.generate_signals:
-                    self.signals[chunk_save_path] = chunk_signal
-                chunked_paths.append(chunk_save_path)
+            chunk_signal = signal[:, start:end]
+            torchaudio.save(chunk_save_path, chunk_signal, fs)
+            if self.generate_signals:
+                self.signals[chunk_save_path] = chunk_signal
+            chunked_paths.append(chunk_save_path)
 
         return chunked_paths
 
+    def divide_and_save_chunks(self, paths):
+        """
+        Divide and save chunks for a list of audio paths.
+
+        Args:
+            paths (list): List of paths to audio files.
+
+        Returns:
+            list: List of paths to the audio chunks.
+        """
+        all_chunked_paths = []
+        with Pool(processes=os.cpu_count()) as pool:
+            results = list(tqdm(pool.imap(self.process_file, paths), total=len(paths), desc="Processing audio files"))
+            for chunked_paths in results:
+                all_chunked_paths.extend(chunked_paths)
+
+        return all_chunked_paths
+
+
     def plot_samples_distribution(self):
+        """
+        Plot the distribution of audio chunks across different sets.
+        """
         if self.chunked_paths:
             sections = list(self.chunked_paths.keys())
             counts = [len(self.chunked_paths[section]) for section in sections]
@@ -441,10 +665,27 @@ class ChunkedSpReWDataset(SpReWDataset):
         else:
             print("No chunked paths available.")
 
+
     def __len__(self):
+        """
+        Get the total number of audio chunks in the dataset.
+
+        Returns:
+            int: Total number of audio chunks.
+        """
         return sum(len(chunks) for chunks in self.chunked_paths.values())
 
+
     def __getitem__(self, idx):
+        """
+        Get an audio chunk and its corresponding label from the dataset.
+
+        Args:
+            idx (int): Index of the audio chunk.
+
+        Returns:
+            tuple: Tuple containing the audio signal and its label.
+        """
         for dataset_type, chunks in self.chunked_paths.items():
             if idx < len(chunks):
                 audio_path = chunks[idx]
@@ -462,159 +703,32 @@ class ChunkedSpReWDataset(SpReWDataset):
             idx -= len(chunks)
 
 
-class EmbeddingDatasetSI(Dataset):
-    def __init__(self, embeddings,labels):
-
-        self.embeddings = embeddings
+class CustomDataset(Dataset):
+    def __init__(self, x, labels):
+        """
+        Initialize the dataset with features and labels.
+        :param x: A list or array of input features.
+        :param labels: A list or array of labels corresponding to the input features.
+        """
+        self.x = x
         self.labels = labels
 
-        #print(self.embeddings,self.labels)
-
     def __len__(self):
-        return len(self.embeddings)
+        """
+        Return the total number of samples in the dataset.
+        """
+        return len(self.x)
 
     def __getitem__(self, idx):
-        return self.embeddings[idx], self.labels[idx]
+        """
+        Generate one sample of data.
+        :param idx: The index of the sample to fetch.
+        :return: A tuple containing the features and the label for one sample.
+        """
+        # Fetch the sample and label
+        sample = self.x[idx]
+        label = self.labels[idx]
 
+        # You can also transform the sample here if necessary (e.g., normalization, augmentation)
 
-class EmbeddingDatasetSV(Dataset):
-    def __init__(self, embeddings,authorized_labels):
-
-        self.embeddings = [emb[0] for emb in embeddings]
-        self.labels = [1 if emb[2] in authorized_labels else 0 for emb in embeddings]
-
-        #print(self.embeddings,self.labels)
-
-    def __len__(self):
-        return len(self.embeddings)
-
-    def __getitem__(self, idx):
-        return self.embeddings[idx], self.labels[idx]
-        
-        
-class PathsDatasetSI(Dataset):
-    def __init__(self, paths,sprew):
-        self.paths = [path for path in paths]
-        self.labels = [sprew.get_label_from_path(path) for path in paths]
-
-    def __len__(self):
-        return len(self.paths)
-
-    def __getitem__(self, idx):
-        return self.paths[idx], self.labels[idx]
-
-
-class PathsDatasetSV(Dataset):
-    def __init__(self, paths,sprew,authorized_labels):
-
-        self.paths = [path for path in paths]
-        self.labels = [sprew.get_label_from_path(path) for path in paths]
-        self.labels = [1 if label in authorized_labels else 0 for label in self.labels]
-
-    def __len__(self):
-        return len(self.paths)
-
-    def __getitem__(self, idx):
-        return self.paths[idx], self.labels[idx]
-
-
-class SignalsSI(Dataset):
-    def __init__(self, paths, sprew, to_tensor=False):
-        self.to_tensor = to_tensor
-        self.signals = [sprew.get_signal(path) for path in paths]
-        self.labels = [sprew.get_label_from_path(path) for path in paths]
-
-    def __len__(self):
-        return len(self.signals)
-
-    def __getitem__(self, idx):
-        signal, label = self.signals[idx], self.labels[idx]
-
-        if self.to_tensor:
-            # Assuming the signal is a numpy array or a similar structure that can be directly converted to a tensor
-            signal = torch.tensor(signal, dtype=torch.float32)
-
-        return signal, label
-
-
-class SignalsSV(Dataset):
-    def __init__(self, paths, sprew, authorized_labels, to_tensor=False):
-        self.to_tensor = to_tensor
-        self.signals = [sprew.get_signal(path) for path in paths]
-        self.labels = [sprew.get_label_from_path(path) for path in paths]
-        self.labels = [1 if label in authorized_labels else 0 for label in self.labels]
-
-    def __len__(self):
-        return len(self.signals)
-
-    def __getitem__(self, idx):
-        signal, label = self.signals[idx], self.labels[idx]
-
-        if self.to_tensor:
-            # Assuming the signal is a numpy array or a similar structure that can be directly converted to a tensor
-            signal = torch.tensor(signal, dtype=torch.float32)
-
-        return signal, label
-    
-import librosa
-import numpy as np
-
-class MelSpectogramSI(Dataset):
-    def __init__(self, paths, sprew, to_tensor=False, to_db=True, n_mels=80, sr=16000):
-        self.sr = sr
-        self.n_mels = n_mels
-        self.to_tensor = to_tensor
-        self.signals = [sprew.get_signal(path) for path in paths]
-
-        # Ensure signals are numpy arrays
-        self.signals = [np.array(signal) if not isinstance(signal, np.ndarray) else signal for signal in self.signals]
-
-        self.spectograms = [librosa.feature.melspectrogram(y=signal, sr=self.sr, n_mels=self.n_mels) for signal in self.signals]
-
-        if to_db:
-            self.spectograms = [librosa.power_to_db(mel_spec, ref=np.max) for mel_spec in self.spectograms]
-
-        self.labels = [sprew.get_label_from_path(path) for path in paths]
-
-    def __len__(self):
-        return len(self.signals)
-
-    def __getitem__(self, idx):
-        spectrogram, label = self.spectograms[idx], self.labels[idx]
-
-        if self.to_tensor:
-            # Convert spectrogram to tensor and add channel dimension
-            spectrogram = torch.tensor(spectrogram, dtype=torch.float32).unsqueeze(0)
-
-        return spectrogram, label
-    
-class MelSpectogramSV(Dataset):
-    def __init__(self, paths, sprew, authorized_labels, to_tensor=False, to_db=True, n_mels=80, sr=16000):
-        self.sr = sr
-        self.n_mels = n_mels
-        self.to_tensor = to_tensor
-        self.signals = [sprew.get_signal(path) for path in paths]
-
-        # Ensure signals are numpy arrays
-        self.signals = [np.array(signal) if not isinstance(signal, np.ndarray) else signal for signal in self.signals]
-
-        self.spectograms = [librosa.feature.melspectrogram(y=signal, sr=self.sr, n_mels=self.n_mels) for signal in self.signals]
-
-        if to_db:
-            self.spectograms = [librosa.power_to_db(mel_spec, ref=np.max) for mel_spec in self.spectograms]
-
-        self.labels = [sprew.get_label_from_path(path) for path in paths]
-        self.labels = [1 if label in authorized_labels else 0 for label in self.labels]
-
-
-    def __len__(self):
-        return len(self.signals)
-
-    def __getitem__(self, idx):
-        spectrogram, label = self.spectograms[idx], self.labels[idx]
-
-        if self.to_tensor:
-            # Convert spectrogram to tensor and add channel dimension
-            spectrogram = torch.tensor(spectrogram, dtype=torch.float32).unsqueeze(0)
-
-        return spectrogram, label
+        return sample, label
