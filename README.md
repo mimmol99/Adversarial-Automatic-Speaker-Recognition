@@ -3,8 +3,6 @@
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Examples](#examples)
-3. [Contributing](#contributing)
-4. [License](#license)
 
 ![Framework Architecture](Adv_ASR_framework.png)
 
