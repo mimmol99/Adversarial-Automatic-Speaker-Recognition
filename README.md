@@ -12,6 +12,7 @@ This work develop an Automatic Speech Recogniton Framework within an Adversarial
 Is possible to apply attacks,defenses and trasferability checks.
 
 # Dataset
+
 In particular has been used the SpReW dataset (collected by [MiviaLAB](https://mivia.unisa.it/)).
 
 The dataset has been split between two classes,authorized voices and not authorized voices.
@@ -23,23 +24,38 @@ Two models has been trained on audio splits: Deepspeech and ECAPA-TDNN,used to p
 # Attacks
 
 The following attacks has been applied:
+
 Generic:
+
 -FGSM
+
 -BIM
+
 -PGD
+
 -DeepFool
+
 -CW
+
 Voice specific:
+
 -FakeBob
+
 -KenanVille
+
 -SirenAttack
+
 
 # Defenses
 
 Various defense techniques has been applied:
+
 -Adversarial samples Detector
+
 -Adversarial training
+
 -Data Augmentation
+
 -Pre-processing
 
 # Requirements
