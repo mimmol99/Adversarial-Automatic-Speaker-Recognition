@@ -4,7 +4,7 @@
 1. [Introduction](#introduction)
 2. [Examples](#examples)
 
-![Framework Architecture](Adv_ASR_framework.png)
+![Framework Architecture](images/Adv_ASR_framework.png)
 
 ## Introduction
 
